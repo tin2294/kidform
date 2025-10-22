@@ -137,7 +137,7 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
         });
       });
 
-      signatures.forEach(async sig => {
+      for (const sig of signatures) {
         const page = pages[sig.page - 1];
         const { width: pdfWidth, height: pdfHeight } = page.getSize();
 
@@ -153,7 +153,7 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
           width: sig.width * scaleX,
           height: sig.height * scaleY,
         });
-      });
+      }
 
       const page = pages[0];
       const { height: pdfHeight } = page.getSize();
@@ -162,6 +162,12 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
       page.drawText(`Fields & signatures included`, { x: 50, y: pdfHeight - 80, size: 10, color: rgb(0, 0, 0) });
 
       const pdfBytes = await pdfDoc.save();
+
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new Uint8Array(pdfBytes));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      console.log('PDF SHA-256 hash:', hashHex);
+
       const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
       const blobUrl = URL.createObjectURL(blob);
       window.open(blobUrl);
@@ -170,6 +176,16 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
       a.href = blobUrl;
       a.download = 'filled.pdf';
       a.click();
+
+      const auditRecord = {
+        signerEmail,
+        timestamp: new Date().toISOString(),
+        documentHash: hashHex,
+        fieldsCount: fields.length,
+        signaturesCount: signatures.length,
+        userAgent: navigator.userAgent,
+      };
+      console.log('Audit record:', auditRecord);
     } catch (err) {
       console.error('Error generating PDF:', err);
     }
@@ -181,12 +197,15 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
       <div className="w-64 bg-white p-4 shadow-md flex-shrink-0">
         <h2 className="text-lg font-semibold mb-4">Actions</h2>
         <div className="flex flex-col gap-3">
-          <button
-            onClick={() => addField(1, 50, 50)}
-            className="px-3 py-2 border rounded hover:bg-gray-100"
-          >
-            Add Field
-          </button>
+          {Array.from({ length: numPages }, (_, i) => (
+            <button
+              key={i}
+              onClick={() => addField(i + 1, 50, 50)}
+              className="px-3 py-2 border rounded hover:bg-gray-100"
+            >
+              Add field on page {i + 1}
+            </button>
+          ))}
           <button
             onClick={() => setShowSigModal(true)}
             className="px-3 py-2 border rounded bg-blue-50 hover:bg-blue-100"
