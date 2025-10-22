@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
 import dynamic from 'next/dynamic';
 import { PDFDocument, rgb } from 'pdf-lib';
+import { sha256 } from '@noble/hashes';
 
 const SignaturePadModal = dynamic(() => import('./SignaturePadModal'), { ssr: false });
 
@@ -126,57 +127,70 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
 
   const handleGeneratePdf = async () => {
     try {
-        const existingPdfBytes = await fetch(url).then(res => res.arrayBuffer());
-        const pdfDoc = await PDFDocument.load(existingPdfBytes);
+      const existingPdfBytes = await fetch(url).then(res => res.arrayBuffer());
+      const pdfDoc = await PDFDocument.load(existingPdfBytes);
+      const pages = pdfDoc.getPages();
 
-        const pages = pdfDoc.getPages();
-
-        // Embed each field value
-        fields.forEach(f => {
+      // Draw text fields
+      fields.forEach(f => {
         const page = pages[f.page - 1];
-        const { width, height } = page.getSize();
-
+        const { height } = page.getSize();
         page.drawText(f.value || '', {
-            x: f.x,
-            y: height - f.y - 30, // invert Y coordinate
-            size: 12,
-            color: rgb(0, 0, 0),
+          x: f.x,
+          y: height - f.y - 30,
+          size: 12,
+          color: rgb(0, 0, 0),
         });
-        });
+      });
 
-        // Embed signatures (as images)
-        for (const sig of signatures) {
+      // Draw signatures
+      for (const sig of signatures) {
         const page = pages[sig.page - 1];
-        const { width, height } = page.getSize();
-
+        const { height } = page.getSize();
         const pngImage = await pdfDoc.embedPng(sig.dataUrl);
         page.drawImage(pngImage, {
-            x: sig.x,
-            y: height - sig.y - sig.height,
-            width: sig.width,
-            height: sig.height,
+          x: sig.x,
+          y: height - sig.y - sig.height,
+          width: sig.width,
+          height: sig.height,
         });
-        }
+      }
 
-        const page = pages[0];
-        const { width, height } = page.getSize();
+      // Add signing info
+      const page = pages[0];
+      const { height } = page.getSize();
+      page.drawText(`Signed by: ${signerEmail}`, { x: 50, y: height - 50, size: 10, color: rgb(0, 0, 0) });
+      page.drawText(`Consent given: ${new Date().toISOString()}`, { x: 50, y: height - 65, size: 10, color: rgb(0, 0, 0) });
+      page.drawText(`Fields & signatures included`, { x: 50, y: height - 80, size: 10, color: rgb(0, 0, 0) });
 
-        page.drawText(`Signed by: ${signerEmail}`, { x: 50, y: height - 50, size: 10, color: rgb(0,0,0) });
-        page.drawText(`Consent given: ${new Date().toISOString()}`, { x: 50, y: height - 65, size: 10, color: rgb(0,0,0) });
-        page.drawText(`Fields & signatures included`, { x: 50, y: height - 80, size: 10, color: rgb(0,0,0) });
+      const pdfBytes = await pdfDoc.save();
 
-        const pdfBytes = await pdfDoc.save();
-        const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-        const blobUrl = URL.createObjectURL(blob);
-        window.open(blobUrl);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new Uint8Array(pdfBytes));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      console.log('PDF SHA-256 hash:', hashHex);
 
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = 'filled.pdf';
-        a.click();
 
+      const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl);
+
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = 'filled.pdf';
+      a.click();
+
+      const auditRecord = {
+        signerEmail,
+        timestamp: new Date().toISOString(),
+        documentHash: hashHex,
+        fieldsCount: fields.length,
+        signaturesCount: signatures.length,
+        userAgent: navigator.userAgent,
+      };
+      console.log('Audit record:', auditRecord);
     } catch (err) {
-        console.error('Error generating PDF:', err);
+      console.error('Error generating PDF:', err);
     }
   };
 
