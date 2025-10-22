@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
 import dynamic from 'next/dynamic';
 import { PDFDocument, rgb } from 'pdf-lib';
-import { sha256 } from '@noble/hashes';
 
 const SignaturePadModal = dynamic(() => import('./SignaturePadModal'), { ssr: false });
 
@@ -39,7 +38,6 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
   const [signatures, setSignatures] = useState<SignatureField[]>([]);
   const [showSigModal, setShowSigModal] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasesRef = useRef<HTMLCanvasElement[]>([]);
   const renderTasks = useRef<any[]>([]);
 
   useEffect(() => {
@@ -53,7 +51,6 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
       const container = containerRef.current;
       if (!container) return;
       container.innerHTML = '';
-      canvasesRef.current = [];
       renderTasks.current = [];
 
       for (let i = 1; i <= pdf.numPages; i++) {
@@ -69,7 +66,6 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
         canvas.style.display = 'block';
         canvas.style.marginBottom = '20px';
         container.appendChild(canvas);
-        canvasesRef.current.push(canvas);
 
         const renderTask = page.render({ canvasContext: ctx, viewport });
         renderTasks.current.push(renderTask);
@@ -92,14 +88,7 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
   }, [url, scale]);
 
   const addField = (page: number, x: number, y: number) => {
-    const newField: PdfField = {
-      id: crypto.randomUUID(),
-      page,
-      x,
-      y,
-      width: 150,
-      value: '',
-    };
+    const newField: PdfField = { id: crypto.randomUUID(), page, x, y, width: 150, value: '' };
     setFields(prev => [...prev, newField]);
   };
 
@@ -131,46 +120,48 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const pages = pdfDoc.getPages();
 
-      // Draw text fields
       fields.forEach(f => {
         const page = pages[f.page - 1];
-        const { height } = page.getSize();
+        const { width: pdfWidth, height: pdfHeight } = page.getSize();
+
+        const canvas = containerRef.current?.children[f.page - 1] as HTMLCanvasElement;
+        if (!canvas) return;
+        const scaleX = pdfWidth / canvas.width;
+        const scaleY = pdfHeight / canvas.height;
+
         page.drawText(f.value || '', {
-          x: f.x,
-          y: height - f.y - 30,
+          x: f.x * scaleX,
+          y: pdfHeight - f.y * scaleY - 12,
           size: 12,
           color: rgb(0, 0, 0),
         });
       });
 
-      // Draw signatures
-      for (const sig of signatures) {
+      signatures.forEach(async sig => {
         const page = pages[sig.page - 1];
-        const { height } = page.getSize();
+        const { width: pdfWidth, height: pdfHeight } = page.getSize();
+
+        const canvas = containerRef.current?.children[sig.page - 1] as HTMLCanvasElement;
+        if (!canvas) return;
+        const scaleX = pdfWidth / canvas.width;
+        const scaleY = pdfHeight / canvas.height;
+
         const pngImage = await pdfDoc.embedPng(sig.dataUrl);
         page.drawImage(pngImage, {
-          x: sig.x,
-          y: height - sig.y - sig.height,
-          width: sig.width,
-          height: sig.height,
+          x: sig.x * scaleX,
+          y: pdfHeight - sig.y * scaleY - sig.height * scaleY,
+          width: sig.width * scaleX,
+          height: sig.height * scaleY,
         });
-      }
+      });
 
-      // Add signing info
       const page = pages[0];
-      const { height } = page.getSize();
-      page.drawText(`Signed by: ${signerEmail}`, { x: 50, y: height - 50, size: 10, color: rgb(0, 0, 0) });
-      page.drawText(`Consent given: ${new Date().toISOString()}`, { x: 50, y: height - 65, size: 10, color: rgb(0, 0, 0) });
-      page.drawText(`Fields & signatures included`, { x: 50, y: height - 80, size: 10, color: rgb(0, 0, 0) });
+      const { height: pdfHeight } = page.getSize();
+      page.drawText(`Signed by: ${signerEmail}`, { x: 50, y: pdfHeight - 50, size: 10, color: rgb(0, 0, 0) });
+      page.drawText(`Consent given: ${new Date().toISOString()}`, { x: 50, y: pdfHeight - 65, size: 10, color: rgb(0, 0, 0) });
+      page.drawText(`Fields & signatures included`, { x: 50, y: pdfHeight - 80, size: 10, color: rgb(0, 0, 0) });
 
       const pdfBytes = await pdfDoc.save();
-
-      const hashBuffer = await crypto.subtle.digest('SHA-256', new Uint8Array(pdfBytes));
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-      console.log('PDF SHA-256 hash:', hashHex);
-
-
       const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
       const blobUrl = URL.createObjectURL(blob);
       window.open(blobUrl);
@@ -179,144 +170,73 @@ export default function PdfViewer({ url, scale = 1.2, signerEmail }: PdfViewerPr
       a.href = blobUrl;
       a.download = 'filled.pdf';
       a.click();
-
-      const auditRecord = {
-        signerEmail,
-        timestamp: new Date().toISOString(),
-        documentHash: hashHex,
-        fieldsCount: fields.length,
-        signaturesCount: signatures.length,
-        userAgent: navigator.userAgent,
-      };
-      console.log('Audit record:', auditRecord);
     } catch (err) {
       console.error('Error generating PDF:', err);
     }
   };
 
   return (
-    <div style={{ position: 'relative' }}>
-      {/* PDF container */}
-      <div ref={containerRef} style={{ position: 'relative' }} />
-
-      {fields.map(f => (
-        <Rnd
-          key={f.id}
-          bounds="parent"
-          size={{ width: f.width, height: 30 }}
-          position={{ x: f.x, y: f.y }}
-          onDragStop={(e, d) =>
-            setFields(prev =>
-              prev.map(field =>
-                field.id === f.id ? { ...field, x: d.x, y: d.y } : field
-              )
-            )
-          }
-          onResizeStop={(e, dir, ref, delta, position) => {
-            setFields(prev =>
-              prev.map(field =>
-                field.id === f.id
-                  ? {
-                      ...field,
-                      width: parseInt(ref.style.width),
-                      ...position,
-                    }
-                  : field
-              )
-            );
-          }}
-        >
-          <input
-            value={f.value}
-            onChange={e => handleFieldChange(f.id, e.target.value)}
-            style={{
-              width: '100%',
-              height: '100%',
-              border: '1px solid #000',
-              background: 'rgba(255,255,255,0.8)',
-              padding: '2px 4px',
-              boxSizing: 'border-box',
-              fontSize: '14px',
-            }}
-          />
-        </Rnd>
-      ))}
-
-      {signatures.map(sig => (
-        <Rnd
-          key={sig.id}
-          bounds="parent"
-          size={{ width: sig.width, height: sig.height }}
-          position={{ x: sig.x, y: sig.y }}
-          onDragStop={(e, d) =>
-            setSignatures(prev =>
-              prev.map(s =>
-                s.id === sig.id ? { ...s, x: d.x, y: d.y } : s
-              )
-            )
-          }
-          onResizeStop={(e, dir, ref, delta, position) => {
-            setSignatures(prev =>
-              prev.map(s =>
-                s.id === sig.id
-                  ? {
-                      ...s,
-                      width: parseInt(ref.style.width),
-                      height: parseInt(ref.style.height),
-                      ...position,
-                    }
-                  : s
-              )
-            );
-          }}
-        >
-          <img
-            src={sig.dataUrl}
-            alt="signature"
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
-              background: 'transparent',
-              pointerEvents: 'none',
-            }}
-          />
-        </Rnd>
-      ))}
-
-      <div style={{ marginTop: '20px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-        {Array.from({ length: numPages }, (_, i) => (
+    <div className="flex h-screen bg-gray-50">
+      {/* Sidebar Actions */}
+      <div className="w-64 bg-white p-4 shadow-md flex-shrink-0">
+        <h2 className="text-lg font-semibold mb-4">Actions</h2>
+        <div className="flex flex-col gap-3">
           <button
-            key={i}
-            onClick={() => addField(i + 1, 50, 50)}
-            style={{ padding: '6px 10px', border: '1px solid #ccc', borderRadius: '6px' }}
+            onClick={() => addField(1, 50, 50)}
+            className="px-3 py-2 border rounded hover:bg-gray-100"
           >
-            Add field on page {i + 1}
+            Add Field
           </button>
-        ))}
-        <button
-          onClick={() => setShowSigModal(true)}
-          style={{
-            padding: '6px 10px',
-            border: '1px solid #ccc',
-            borderRadius: '6px',
-            backgroundColor: '#e0f7ff',
-          }}
-        >
-          Add Signature
-        </button>
-        <button
-        onClick={handleGeneratePdf}
-        style={{
-            padding: '6px 10px',
-            border: '1px solid #ccc',
-            borderRadius: '6px',
-            backgroundColor: '#d1ffd1',
-        }}
-        >
-        Generate PDF
-        </button>
+          <button
+            onClick={() => setShowSigModal(true)}
+            className="px-3 py-2 border rounded bg-blue-50 hover:bg-blue-100"
+          >
+            Add Signature
+          </button>
+          <button
+            onClick={handleGeneratePdf}
+            className="px-3 py-2 border rounded bg-green-50 hover:bg-green-100"
+          >
+            Generate PDF
+          </button>
+        </div>
+      </div>
 
+      {/* PDF Viewer */}
+      <div className="flex-1 overflow-auto p-4 relative">
+        <div ref={containerRef} />
+        {fields.map(f => (
+          <Rnd
+            key={f.id}
+            bounds="parent"
+            size={{ width: f.width, height: 30 }}
+            position={{ x: f.x, y: f.y }}
+            onDragStop={(e, d) => setFields(prev => prev.map(field => field.id === f.id ? { ...field, x: d.x, y: d.y } : field))}
+            onResizeStop={(e, dir, ref, delta, position) =>
+              setFields(prev => prev.map(field => field.id === f.id ? { ...field, width: parseInt(ref.style.width), ...position } : field))
+            }
+          >
+            <input
+              value={f.value}
+              onChange={e => handleFieldChange(f.id, e.target.value)}
+              className="w-full h-full border border-black bg-white/80 p-1 text-sm"
+            />
+          </Rnd>
+        ))}
+        {signatures.map(sig => (
+          <Rnd
+            key={sig.id}
+            bounds="parent"
+            size={{ width: sig.width, height: sig.height }}
+            position={{ x: sig.x, y: sig.y }}
+            onDragStop={(e, d) => setSignatures(prev => prev.map(s => s.id === sig.id ? { ...s, x: d.x, y: d.y } : s))}
+            onResizeStop={(e, dir, ref, delta, position) =>
+              setSignatures(prev => prev.map(s => s.id === sig.id ? { ...s, width: parseInt(ref.style.width), height: parseInt(ref.style.height), ...position } : s))
+            }
+          >
+            <img src={sig.dataUrl} alt="signature" className="w-full h-full object-contain pointer-events-none" />
+          </Rnd>
+        ))}
       </div>
 
       {showSigModal && (
